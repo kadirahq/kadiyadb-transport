@@ -1,6 +1,25 @@
 var net = require('net');
 var url = require('url');
 
+function connect(address, callback){
+  var socket = new net.Socket();
+
+  function onConnect () {
+    var conn = new Connection(socket);
+    callback(null, conn);
+  }
+
+  function onError (err) {
+    socket.removeListener('connect', onConnect);
+    callback(err);
+  }
+
+  address = url.parse(address);
+  socket.once('connect', onConnect);
+  socket.once('error', onError);
+  socket.connect(address.port, address.hostname);
+}
+
 function Connection(socket){
   this._socket = socket;
   this._data = new Buffer(8192);
@@ -13,29 +32,32 @@ function Connection(socket){
   this._socket.on('data', this._onData.bind(this));
 }
 
-function dial(address, callback){
-  var socket = new net.Socket();
-
-  function onConnect () {
-    var connection = new Connection(socket);
-    callback(null, connection);
+Connection.prototype.ReadBatch = function(callback){
+  if(this._batches.length){
+    var batch = this._batches.pop()
+    callback(batch.id, batch.type, batch.data);
+  } else {
+    this._readBatchCallbacks.push(callback);
   }
+};
 
-  function onError (err) {
-    console.log(err);
-    socket.removeListener('connect', onConnect);
-    callback(err);
-  }
+Connection.prototype.WriteBatch = function(id, type, reqBatch){
+  var self = this;
+  var header = new Buffer(13);
+  var itemSizeBuf = new Buffer(4);
 
-  address = url.parse(address);
-  socket.once('connect', onConnect);
-  socket.once('error', onError);
-  socket.connect(address.port, address.hostname);
-}
+  header.fill(0);
+  header.writeUInt32LE(id, 0);
+  header.writeUInt8(type, 8);
+  header.writeUInt32LE(reqBatch.length, 9);
+  this._socket.write(header);
 
-Connection.prototype.write = function(data, callback){
-    this._socket.write(data, 'binary', callback);
-}
+  reqBatch.forEach(function(item){
+    itemSizeBuf.writeUInt32LE(item.length);
+    self.write(itemSizeBuf);
+    self.write(item);
+  });
+};
 
 Connection.prototype._onData = function(data){
   var newSize = this._dataEnd + data.length;
@@ -136,36 +158,7 @@ Connection.prototype._growBuffer = function(size) {
   this._data = buff;
 };
 
-function Transport(connection){
-  this._connection = connection
-  this._readBatchCallbacks = []
-}
-
-Transport.prototype.ReadBatch = function(callback){
-  if(this._connection._batches.length){
-    var batch = this._connection._batches.pop()
-    callback(batch.id, batch.type, batch.data);
-  } else {
-    this._connection._readBatchCallbacks.push(callback);
-  }
-}
-
-Transport.prototype.WriteBatch = function(id, type, reqBatch){
-  var header = new Buffer(13);
-  var itemSizeBuf = new Buffer(4);
-  header.fill(0)
-  header.writeUInt32LE(id, 0);
-  header.writeUInt8(type, 8);
-  header.writeUInt32LE(reqBatch.length, 9)
-  this._connection.write(header)
-
-  var self = this
-  reqBatch.forEach(function(item){
-    itemSizeBuf.writeUInt32LE(item.length)
-    self._connection.write(itemSizeBuf)
-    self._connection.write(item)
-  })
-}
-
-module.exports.dial = dial;
-module.exports.Transport = Transport;
+module.exports = {
+  connect: connect,
+  Connection: Connection,
+};
