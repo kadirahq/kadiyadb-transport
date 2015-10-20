@@ -1,6 +1,6 @@
 {
   "name": "kadiyadb-transport",
-  "version": "0.0.2",
+  "version": "0.0.3",
   "description": "Kadiyadb tcp transport helper",
   "main": "transport.js",
   "scripts": {
