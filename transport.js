@@ -21,6 +21,7 @@ function connect(address, callback){
 }
 
 function Connection(socket){
+  var self = this;
   this._socket = socket;
   this._data = new Buffer(8192);
   this._dataTmp = new Buffer(8192);
@@ -43,13 +44,13 @@ Connection.prototype.ReadBatch = function(callback){
 
 Connection.prototype.WriteBatch = function(id, type, reqBatch){
   var self = this;
-  var header = new Buffer(13);
+  var header = new Buffer(9);
   var itemSizeBuf = new Buffer(4);
 
   header.fill(0);
   header.writeUInt32LE(id, 0);
-  header.writeUInt8(type, 8);
-  header.writeUInt32LE(reqBatch.length, 9);
+  header.writeUInt8(type, 4);
+  header.writeUInt32LE(reqBatch.length, 5);
   this._socket.write(header);
 
   reqBatch.forEach(function(item){
@@ -72,14 +73,14 @@ Connection.prototype._onData = function(data){
 
   while(true){
     if(!this._current){ // Header has not been read
-      if(buffer.length-startOffset < 13){
+      if(buffer.length-startOffset < 9){
         // Header is not received yet
         break;
       }
 
       var id = buffer.readUInt32LE(startOffset)
-      var type = buffer.readUInt8(startOffset+8)
-      var size = buffer.readUInt32LE(startOffset+9)
+      var type = buffer.readUInt8(startOffset+4)
+      var size = buffer.readUInt32LE(startOffset+5)
 
       this._current = {
         id: id,
@@ -88,7 +89,7 @@ Connection.prototype._onData = function(data){
         read: 0
       }
 
-      startOffset = startOffset + 13
+      startOffset = startOffset + 9
     }
 
     while(this._current.size>this._current.read){

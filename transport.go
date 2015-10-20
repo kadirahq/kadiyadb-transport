@@ -144,17 +144,16 @@ func New(conn *Conn) (t *Transport) {
 }
 
 // SendBatch writes data to the connection
-func (t *Transport) SendBatch(batch [][]byte, id uint64, msgType uint8) error {
+func (t *Transport) SendBatch(batch [][]byte, id uint32, msgType uint8) error {
 	t.writeLock.Lock()
 	defer t.writeLock.Unlock()
 
 	sz := uint32(len(batch))
+	hybrid.EncodeUint32(t.buf[:4], &id)
+	hybrid.EncodeUint8(t.buf[4:5], &msgType)
+	hybrid.EncodeUint32(t.buf[5:9], &sz)
 
-	hybrid.EncodeUint64(t.buf[:8], &id)
-	hybrid.EncodeUint8(t.buf[8:9], &msgType)
-	hybrid.EncodeUint32(t.buf[9:13], &sz)
-
-	err := t.conn.Write(t.buf[:13])
+	err := t.conn.Write(t.buf[:9])
 	if err != nil {
 		return err
 	}
@@ -177,31 +176,28 @@ func (t *Transport) SendBatch(batch [][]byte, id uint64, msgType uint8) error {
 }
 
 // ReceiveBatch reads data from the connection
-func (t *Transport) ReceiveBatch() ([][]byte, uint64, uint8, error) {
+func (t *Transport) ReceiveBatch() ([][]byte, uint32, uint8, error) {
 	t.readLock.Lock()
 	defer t.readLock.Unlock()
 
 	var resBatch [][]byte
-	var id uint64
+	var id uint32
 	var msgType uint8
 
-	bytes, err := t.conn.Read(13) // Read the header
+	bytes, err := t.conn.Read(9) // Read the header
 	if err != nil {
 		return resBatch, id, msgType, err
 	}
 
 	var uiSize uint32
-
-	hybrid.DecodeUint64(bytes[:8], &id)
-	hybrid.DecodeUint8(bytes[8:9], &msgType)
-	hybrid.DecodeUint32(bytes[9:13], &uiSize)
+	hybrid.DecodeUint32(bytes[:4], &id)
+	hybrid.DecodeUint8(bytes[4:5], &msgType)
+	hybrid.DecodeUint32(bytes[5:9], &uiSize)
 
 	size := int(uiSize)
-
 	resBatch = make([][]byte, size)
 
 	var uiMsgSize uint32
-
 	for i := 0; i < size; i++ {
 		bytes, err := t.conn.Read(4)
 		if err != nil {
