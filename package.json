@@ -1,0 +1,22 @@
+{
+  "name": "kadiyadb-transport",
+  "version": "0.0.1",
+  "description": "Kadiyadb tcp transport helper",
+  "main": "transport.js",
+  "scripts": {
+    "test": "mocha"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/mnmtanish/kadiyadb-transport.git"
+  },
+  "keywords": [
+    "kadiyadb"
+  ],
+  "author": "KadiraHQ",
+  "license": "MIT",
+  "bugs": {
+    "url": "https://github.com/mnmtanish/kadiyadb-transport/issues"
+  },
+  "homepage": "https://github.com/mnmtanish/kadiyadb-transport#readme"
+}
