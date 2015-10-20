@@ -54,8 +54,8 @@ Connection.prototype.WriteBatch = function(id, type, reqBatch){
 
   reqBatch.forEach(function(item){
     itemSizeBuf.writeUInt32LE(item.length);
-    self.write(itemSizeBuf);
-    self.write(item);
+    self._socket.write(itemSizeBuf);
+    self._socket.write(item);
   });
 };
 
