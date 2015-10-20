@@ -10,10 +10,7 @@
     "type": "git",
     "url": "git+https://github.com/mnmtanish/kadiyadb-transport.git"
   },
-  "keywords": [
-    "kadiyadb"
-  ],
-  "author": "KadiraHQ",
+  "author": "Kadira Inc.",
   "license": "MIT",
   "bugs": {
     "url": "https://github.com/mnmtanish/kadiyadb-transport/issues"
