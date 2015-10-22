@@ -3,34 +3,58 @@ var url = require('url');
 
 function connect(address, callback){
   var socket = new net.Socket();
+  var conn;
+  address = url.parse(address);
 
   function onConnect () {
-    var conn = new Connection(socket);
+    socket.removeListener('error', onError);
+
+    conn = new Connection();
+    conn._socket = socket;
+    socket.on('data', conn._onData.bind(conn));
+    conn.connected = true;
+
+    registerReconnect();
+
     callback(null, conn);
   }
 
   function onError (err) {
-    socket.removeListener('connect', onConnect);
-    callback(err);
+    socket = this;
+    setTimeout(function(){
+      socket.connect(address.port, address.hostname);
+    }, 1000);
   }
 
-  address = url.parse(address);
+  function registerReconnect() {
+    conn._socket.once('close', function () {
+      console.log('socket closed');
+      conn.connected = false;
+      var newsocket = new net.Socket();
+
+      newsocket.once('connect', function(){
+        newsocket.removeListener('error', onError);
+
+        conn._socket = newsocket;
+        newsocket.on('data', conn._onData.bind(conn));
+        conn.connected = true; // set as connected again
+      });
+
+      newsocket.on('error', onError.bind(newsocket));
+      newsocket.connect(address.port, address.hostname);
+    })
+  }
+
   socket.once('connect', onConnect);
-  socket.once('error', onError);
+  socket.on('error', onError.bind(socket));
   socket.connect(address.port, address.hostname);
 }
 
-function Connection(socket){
-  var self = this;
-  this._socket = socket;
-  this._data = new Buffer(8192);
-  this._dataTmp = new Buffer(8192);
-  this._cursor = 0;
-  this._items = [];
-  this._batches = [];
+function Connection(){
+  this.connected = false;
   this._readBatchCallbacks = [];
-  this._dataEnd = 0;
-  this._socket.on('data', this._onData.bind(this));
+
+  this._reset();
 }
 
 Connection.prototype.ReadBatch = function(callback){
@@ -59,6 +83,14 @@ Connection.prototype.WriteBatch = function(id, type, reqBatch){
     self._socket.write(item);
   });
 };
+
+Connection.prototype._reset = function(){
+  this._data = new Buffer(8192);
+  this._dataTmp = new Buffer(8192);
+  this._items = [];
+  this._batches = [];
+  this._dataEnd = 0;
+}
 
 Connection.prototype._onData = function(data){
   var newSize = this._dataEnd + data.length;
