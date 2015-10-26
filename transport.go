@@ -37,6 +37,7 @@ type Conn struct {
 	buff    *bytes.Buffer
 	buffAlt *bytes.Buffer
 	reader  *bufio.Reader
+	connMtx *sync.Mutex
 	sendMtx *sync.Mutex
 	recvMtx *sync.Mutex
 	flshMtx *sync.Mutex
@@ -64,6 +65,7 @@ func wrap(nc net.Conn) (c *Conn) {
 		buff:    bytes.NewBuffer(nil),
 		buffAlt: bytes.NewBuffer(nil),
 		reader:  bufio.NewReaderSize(nc, BufferSize),
+		connMtx: &sync.Mutex{},
 		sendMtx: &sync.Mutex{},
 		recvMtx: &sync.Mutex{},
 		flshMtx: &sync.Mutex{},
@@ -77,7 +79,7 @@ func wrap(nc net.Conn) (c *Conn) {
 }
 
 // Send ...
-func (c *Conn) Send(msg Message) (err error) {
+func (c *Conn) Send(msg Message, now bool) (err error) {
 	c.sendMtx.Lock()
 	defer c.sendMtx.Unlock()
 
@@ -98,11 +100,21 @@ func (c *Conn) Send(msg Message) (err error) {
 	}
 
 	*c.sendSz.Value = uint32(size)
-	if err := c.write(c.buff, c.sendSz.Bytes); err != nil {
+
+	var dst io.Writer
+	if now {
+		dst = c.conn
+		c.connMtx.Lock()
+		defer c.connMtx.Unlock()
+	} else {
+		dst = c.buff
+	}
+
+	if err := c.write(dst, c.sendSz.Bytes); err != nil {
 		return err
 	}
 
-	if err := c.write(c.buff, data); err != nil {
+	if err := c.write(dst, data); err != nil {
 		return err
 	}
 
@@ -153,7 +165,12 @@ func (c *Conn) Flush() (err error) {
 	c.sendMtx.Unlock()
 
 	size := c.buffAlt.Len()
-	if n, err := c.buffAlt.WriteTo(c.conn); err != nil {
+
+	c.connMtx.Lock()
+	n, err := c.buffAlt.WriteTo(c.conn)
+	c.connMtx.Unlock()
+
+	if err != nil {
 		return err
 	} else if int(n) != size {
 		panic("WriteTo failed")
