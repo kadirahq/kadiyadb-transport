@@ -58,7 +58,8 @@ function Connection() {
 
 Connection.prototype.recv = function(decoder, callback) {
   if (this._responses.length) {
-    var res = this._responses.pop();
+    var data = this._responses.pop();
+    var res = decoder.decode(data);
     callback(null, res);
   } else {
     this._readcalls.push(callback);
@@ -75,7 +76,7 @@ Connection.prototype.send = function(encoder, req) {
 
 Connection.prototype._onData = function(data) {
   var size = this._buffEnd + data.length;
-  if (this._data.length < size) {
+  if (this._buffPri.length < size) {
     this._grow(size);
   }
 
