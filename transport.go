@@ -5,9 +5,9 @@ import (
 	"bytes"
 	"io"
 	"net"
-	"runtime"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/gogo/protobuf/proto"
 	"github.com/kadirahq/go-tools/hybrid"
@@ -263,7 +263,8 @@ func (l *Listener) Flush() (err error) {
 func (l *Listener) startWorker() {
 	for {
 		for len(l.clientsMap) == 0 {
-			runtime.Gosched()
+			time.Sleep(100 * time.Millisecond)
+			continue
 		}
 
 		for id, c := range l.clientsMap {
