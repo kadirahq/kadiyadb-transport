@@ -96,9 +96,10 @@ Connection.prototype._onData = function(data) {
       break
     }
 
-    var res = buffer.slice(offset + 4, offset + 4 + size);
+    var data = buffer.slice(offset + 4, offset + 4 + size);
     if (this._readcalls.length) {
       var callback = this._readcalls.pop();
+      var res = decoder.decode(data);
       callback(null, res);
     } else {
       this._responses.push(res);
