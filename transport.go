@@ -18,7 +18,7 @@ const (
 	BufferSize = 1024 * 1024
 
 	// WorkerCount ...
-	WorkerCount = 2
+	WorkerCount = 8
 )
 
 // Message ...
@@ -60,7 +60,7 @@ func wrap(nc net.Conn) (c *Conn) {
 		conn:    nc,
 		buff:    bytes.NewBuffer(nil),
 		buffAlt: bytes.NewBuffer(nil),
-		reader:  bufio.NewReader(nc),
+		reader:  bufio.NewReaderSize(nc, BufferSize),
 		sendMtx: &sync.Mutex{},
 		recvMtx: &sync.Mutex{},
 		flshMtx: &sync.Mutex{},
