@@ -2,214 +2,290 @@ package transport
 
 import (
 	"bufio"
+	"bytes"
 	"io"
 	"net"
+	"runtime"
 	"sync"
+	"sync/atomic"
 
+	"github.com/gogo/protobuf/proto"
 	"github.com/kadirahq/go-tools/hybrid"
 )
 
 const (
-	defaultBufferSize = 8192
+	// BufferSize ...
+	BufferSize = 1024 * 1024
+
+	// WorkerCount ...
+	WorkerCount = 8
 )
 
-// Conn is a Transport connection
+// Message ...
+type Message interface {
+	MarshalTo([]byte) (int, error)
+	proto.Unmarshaler
+	proto.Sizer
+}
+
+// Conn ...
 type Conn struct {
-	writer *bufio.Writer
-	reader *bufio.Reader
-	closer io.Closer
+	conn    net.Conn
+	buff    *bytes.Buffer
+	buffAlt *bytes.Buffer
+	reader  *bufio.Reader
+	sendMtx *sync.Mutex
+	recvMtx *sync.Mutex
+	flshMtx *sync.Mutex
+	sendSz  *hybrid.Uint32
+	sendBuf []byte
+	recvSz  *hybrid.Uint32
+	recvBuf []byte
 }
 
-// NewConn creates a new Transport connection
-func NewConn(conn net.Conn) *Conn {
-	return &Conn{
-		writer: bufio.NewWriterSize(conn, defaultBufferSize),
-		reader: bufio.NewReaderSize(conn, defaultBufferSize),
-		closer: conn,
-	}
-}
-
-// Dial creates a connection to given address
+// Dial ...
 func Dial(addr string) (c *Conn, err error) {
-	conn, err := net.Dial("tcp", addr)
+	nc, err := net.Dial("tcp", addr)
 	if err != nil {
 		return nil, err
 	}
 
-	return NewConn(conn), nil
+	c = wrap(nc)
+	return c, nil
 }
 
-// Write writes to the connection
-func (conn *Conn) Write(buffer []byte) error {
-	toWrite := buffer[:]
-	for len(toWrite) > 0 {
-		n, err := conn.writer.Write(toWrite)
-		if (err != nil) && (err != io.ErrShortWrite) {
-			return err
-		}
-
-		toWrite = toWrite[n:]
+// wrap ...
+func wrap(nc net.Conn) (c *Conn) {
+	c = &Conn{
+		conn:    nc,
+		buff:    bytes.NewBuffer(nil),
+		buffAlt: bytes.NewBuffer(nil),
+		reader:  bufio.NewReaderSize(nc, BufferSize),
+		sendMtx: &sync.Mutex{},
+		recvMtx: &sync.Mutex{},
+		flshMtx: &sync.Mutex{},
+		sendSz:  hybrid.NewUint32(nil),
+		sendBuf: make([]byte, 0, BufferSize),
+		recvSz:  hybrid.NewUint32(nil),
+		recvBuf: make([]byte, 0, BufferSize),
 	}
 
-	return nil
+	return c
 }
 
-// Read reads `n` number of bytes from the connection
-func (conn *Conn) Read(n int) ([]byte, error) {
-	buffer := make([]byte, n)
+// Send ...
+func (c *Conn) Send(msg Message) (err error) {
+	c.sendMtx.Lock()
+	defer c.sendMtx.Unlock()
 
-	toRead := buffer[:]
-	for len(toRead) > 0 {
-		read, err := conn.reader.Read(toRead)
-		if err != nil {
-			return nil, err
-		}
+	var data []byte
+	size := msg.Size()
 
-		toRead = toRead[read:]
+	if size > len(c.sendBuf) {
+		data = make([]byte, size)
+	} else {
+		data = c.sendBuf[:size]
 	}
 
-	return buffer, nil
-}
-
-// Flush flushes the buffer
-func (conn *Conn) Flush() error {
-	err := conn.writer.Flush()
-	for err == io.ErrShortWrite {
-		err = conn.writer.Flush()
+	n, err := msg.MarshalTo(data)
+	if err != nil {
+		return err
+	} else if n != size {
+		panic("MarshalTo failed")
 	}
-	return err
-}
 
-// Close closes the connection
-func (conn *Conn) Close() (err error) {
-	conn.Flush()
+	*c.sendSz.Value = uint32(size)
+	if err := c.write(c.buff, c.sendSz.Bytes); err != nil {
+		return err
+	}
 
-	if err := conn.closer.Close(); err != nil {
+	if err := c.write(c.buff, data); err != nil {
 		return err
 	}
 
 	return nil
 }
 
-// Server listens for new connections
-type Server struct {
-	lsnr net.Listener
-}
+// Recv ...
+func (c *Conn) Recv(msg Message) (err error) {
+	c.recvMtx.Lock()
+	defer c.recvMtx.Unlock()
 
-// Serve creates a listener and accepts connections
-func Serve(addr string) (s *Server, err error) {
-	lsnr, err := net.Listen("tcp", addr)
-	if err != nil {
-		return nil, err
+	if *c.recvSz.Value == 0 {
+		if err := c.read(c.reader, c.recvSz.Bytes); err != nil {
+			return err
+		}
 	}
 
-	return &Server{lsnr: lsnr}, nil
-}
+	var data []byte
 
-// Close stops accepting connections
-func (s *Server) Close() (err error) {
-	if err := s.lsnr.Close(); err != nil {
+	size := int(*c.recvSz.Value)
+	if size > len(c.recvBuf) {
+		data = make([]byte, size)
+	} else {
+		data = c.recvBuf[:size]
+	}
+
+	if err := c.read(c.reader, data); err != nil {
+		return err
+	}
+
+	// reset size buffer
+	*c.recvSz.Value = 0
+
+	if err := msg.Unmarshal(data); err != nil {
 		return err
 	}
 
 	return nil
 }
 
-// Accept returns a channel of connections
-func (s *Server) Accept() (c *Conn, err error) {
-	conn, err := s.lsnr.Accept()
-	if err != nil {
-		return nil, err
+// Flush ...
+func (c *Conn) Flush() (err error) {
+	c.flshMtx.Lock()
+	defer c.flshMtx.Unlock()
+
+	c.sendMtx.Lock()
+	c.buff, c.buffAlt = c.buffAlt, c.buff
+	c.sendMtx.Unlock()
+
+	size := c.buffAlt.Len()
+	if n, err := c.buffAlt.WriteTo(c.conn); err != nil {
+		return err
+	} else if int(n) != size {
+		panic("WriteTo failed")
 	}
 
-	return NewConn(conn), nil
-}
-
-// Transport is used to wrap and send Responses
-type Transport struct {
-	conn      *Conn
-	writeLock *sync.Mutex
-	readLock  *sync.Mutex
-	buf       []byte
-}
-
-// New creates a new Transport for a connection
-func New(conn *Conn) (t *Transport) {
-	return &Transport{
-		conn:      conn,
-		writeLock: new(sync.Mutex),
-		readLock:  new(sync.Mutex),
-		buf:       make([]byte, 13),
+	if cap := c.buffAlt.Cap(); cap > BufferSize {
+		c.buffAlt = bytes.NewBuffer(nil)
+	} else {
+		c.buffAlt.Reset()
 	}
+
+	return nil
 }
 
-// SendBatch writes data to the connection
-func (t *Transport) SendBatch(batch [][]byte, id uint32, msgType uint8) error {
-	t.writeLock.Lock()
-	defer t.writeLock.Unlock()
+// Close ...
+func (c *Conn) Close() (err error) {
+	c.sendMtx.Lock()
+	defer c.sendMtx.Unlock()
+	c.recvMtx.Lock()
+	defer c.recvMtx.Unlock()
+	c.flshMtx.Lock()
+	defer c.flshMtx.Unlock()
 
-	sz := uint32(len(batch))
-	hybrid.EncodeUint32(t.buf[:4], &id)
-	hybrid.EncodeUint8(t.buf[4:5], &msgType)
-	hybrid.EncodeUint32(t.buf[5:9], &sz)
+	return c.conn.Close()
+}
 
-	err := t.conn.Write(t.buf[:9])
+func (c *Conn) write(w io.Writer, d []byte) (err error) {
+	for towrite := d[:]; len(towrite) > 0; {
+		n, err := w.Write(towrite)
+		if err != nil {
+			return err
+		}
+
+		towrite = towrite[n:]
+	}
+
+	return nil
+}
+
+func (c *Conn) read(r io.Reader, d []byte) (err error) {
+	for toread := d[:]; len(toread) > 0; {
+		n, err := r.Read(toread)
+		if err != nil {
+			return err
+		}
+
+		toread = toread[n:]
+	}
+
+	return nil
+}
+
+// Handler ...
+type Handler func(c *Conn) (err error)
+
+// Listener ...
+type Listener struct {
+	handler    Handler
+	clientsMap map[uint64]*Conn
+	clientsMtx sync.Mutex
+	clientsCtr uint64
+}
+
+// NewListener ...
+func NewListener(handler Handler) (l *Listener) {
+	l = &Listener{
+		handler:    handler,
+		clientsMap: map[uint64]*Conn{},
+	}
+
+	return l
+}
+
+// Listen ...
+func (l *Listener) Listen(addr string) (err error) {
+	listener, err := net.Listen("tcp", addr)
 	if err != nil {
 		return err
 	}
 
-	for _, req := range batch {
-		sz := uint32(len(req))
-		hybrid.EncodeUint32(t.buf[:4], &sz)
-		err = t.conn.Write(t.buf[:4])
-		if err != nil {
-			return err
-		}
-
-		err = t.conn.Write(req)
-		if err != nil {
-			return err
-		}
+	// start all worker goroutines
+	for i := 0; i < WorkerCount; i++ {
+		go l.startWorker()
 	}
 
-	return t.conn.Flush()
+	for {
+		nc, err := listener.Accept()
+		if err != nil {
+			continue
+		}
+
+		go l.handleConnection(nc)
+	}
 }
 
-// ReceiveBatch reads data from the connection
-func (t *Transport) ReceiveBatch() ([][]byte, uint32, uint8, error) {
-	t.readLock.Lock()
-	defer t.readLock.Unlock()
-
-	var resBatch [][]byte
-	var id uint32
-	var msgType uint8
-
-	bytes, err := t.conn.Read(9) // Read the header
-	if err != nil {
-		return resBatch, id, msgType, err
-	}
-
-	var uiSize uint32
-	hybrid.DecodeUint32(bytes[:4], &id)
-	hybrid.DecodeUint8(bytes[4:5], &msgType)
-	hybrid.DecodeUint32(bytes[5:9], &uiSize)
-
-	size := int(uiSize)
-	resBatch = make([][]byte, size)
-
-	var uiMsgSize uint32
-	for i := 0; i < size; i++ {
-		bytes, err := t.conn.Read(4)
-		if err != nil {
-			return resBatch, id, msgType, err
-		}
-		hybrid.DecodeUint32(bytes, &uiMsgSize)
-
-		resBatch[i], err = t.conn.Read(int(uiMsgSize))
-		if err != nil {
-			return resBatch, id, msgType, err
+// Flush ...
+func (l *Listener) Flush() (err error) {
+	// TODO now okay for a small number of client connections
+	// better start goroutines and use a waitgroup later on
+	for id, c := range l.clientsMap {
+		if err := c.Flush(); err != nil {
+			l.removeConnection(id)
+			return err
 		}
 	}
 
-	return resBatch, id, msgType, err
+	return nil
+}
+
+func (l *Listener) startWorker() {
+	for {
+		for len(l.clientsMap) == 0 {
+			runtime.Gosched()
+		}
+
+		for id, c := range l.clientsMap {
+			if err := l.handler(c); err != nil {
+				l.removeConnection(id)
+			}
+		}
+	}
+}
+
+func (l *Listener) handleConnection(nc net.Conn) {
+	clientID := atomic.AddUint64(&l.clientsCtr, 1)
+	l.clientsMtx.Lock()
+	l.clientsMap[clientID] = wrap(nc)
+	l.clientsMtx.Unlock()
+}
+
+func (l *Listener) removeConnection(id uint64) {
+	l.clientsMtx.Lock()
+	if c, ok := l.clientsMap[id]; ok {
+		delete(l.clientsMap, id)
+		c.Close()
+	}
+	l.clientsMtx.Unlock()
 }
