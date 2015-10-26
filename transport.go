@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"io"
 	"net"
+	"runtime"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -16,9 +17,11 @@ import (
 const (
 	// BufferSize ...
 	BufferSize = 1024 * 1024
+)
 
+var (
 	// WorkerCount ...
-	WorkerCount = 8
+	WorkerCount = runtime.NumCPU()
 )
 
 // Message ...
