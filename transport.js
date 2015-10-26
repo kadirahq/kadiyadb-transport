@@ -1,194 +1,122 @@
 var net = require('net');
 var url = require('url');
 
-function connect(address, callback){
-  var socket = new net.Socket();
-  var conn;
-  address = url.parse(address);
+function connect(_addr, callback) {
+  var sock = new net.Socket();
+  var addr = url.parse(_addr);
+  var conn = new Connection();
 
-  function onConnect () {
-    socket.removeListener('error', onError);
+  function onConnect() {
+    sock.removeListener('error', onError);
 
-    conn = new Connection();
-    conn._socket = socket;
-    socket.on('data', conn._onData.bind(conn));
+    conn._socket = sock;
     conn.connected = true;
+    sock.on('data', conn._onData.bind(conn));
+    callback(null, conn);
 
     registerReconnect();
-
-    callback(null, conn);
   }
 
-  function onError (err) {
-    socket = this;
-    setTimeout(function(){
-      socket.connect(address.port, address.hostname);
+  function onError(err) {
+    sock = this;
+    setTimeout(function() {
+      sock.connect(addr.port, addr.hostname);
     }, 1000);
   }
 
   function registerReconnect() {
-    conn._socket.once('close', function () {
-      console.log('socket closed');
+    conn._socket.once('close', function() {
       conn.connected = false;
-      var newsocket = new net.Socket();
+      var newsock = new net.Socket();
 
-      newsocket.once('connect', function(){
-        newsocket.removeListener('error', onError);
+      newsock.once('connect', function() {
+        newsock.removeListener('error', onError);
 
-        conn._socket = newsocket;
-        newsocket.on('data', conn._onData.bind(conn));
-        conn.connected = true; // set as connected again
+        conn._socket = newsock;
+        conn.connected = true;
+        newsock.on('data', conn._onData.bind(conn));
       });
 
-      newsocket.on('error', onError.bind(newsocket));
-      newsocket.connect(address.port, address.hostname);
+      newsock.on('error', onError.bind(newsock));
+      newsock.connect(addr.port, addr.hostname);
     })
   }
 
-  socket.once('connect', onConnect);
-  socket.on('error', onError.bind(socket));
-  socket.connect(address.port, address.hostname);
+  sock.once('connect', onConnect);
+  sock.on('error', onError.bind(sock));
+  sock.connect(addr.port, addr.hostname);
 }
 
-function Connection(){
+function Connection() {
   this.connected = false;
-  this._readBatchCallbacks = [];
-
+  this._responses = [];
+  this._readcalls = [];
+  this._buffPri = new Buffer(8192);
+  this._buffSec = new Buffer(8192);
+  this._buffEnd = 0;
   this._reset();
 }
 
-Connection.prototype.ReadBatch = function(callback){
-  if(this._batches.length){
-    var batch = this._batches.pop()
-    callback(batch.id, batch.type, batch.data);
+Connection.prototype.Recv = function(callback) {
+  if (this._responses.length) {
+    var res = this._responses.pop();
+    callback(null, res);
   } else {
-    this._readBatchCallbacks.push(callback);
+    this._readcalls.push(callback);
   }
 };
 
-Connection.prototype.WriteBatch = function(id, type, reqBatch){
-  var self = this;
-  var header = new Buffer(9);
-  var itemSizeBuf = new Buffer(4);
-
-  header.fill(0);
-  header.writeUInt32LE(id, 0);
-  header.writeUInt8(type, 4);
-  header.writeUInt32LE(reqBatch.length, 5);
-  this._socket.write(header);
-
-  reqBatch.forEach(function(item){
-    itemSizeBuf.writeUInt32LE(item.length);
-    self._socket.write(itemSizeBuf);
-    self._socket.write(item);
-  });
+Connection.prototype.Send = function(req) {
+  var size = new Buffer(4);
+  size.writeUInt32LE(req.length);
+  this._socket.write(size);
+  this._socket.write(req);
 };
 
-Connection.prototype._reset = function(){
-  this._data = new Buffer(8192);
-  this._dataTmp = new Buffer(8192);
-  this._items = [];
-  this._batches = [];
-  this._dataEnd = 0;
-}
-
-Connection.prototype._onData = function(data){
-  var newSize = this._dataEnd + data.length;
-  if(this._data.length < newSize) {
-    this._growBuffer(newSize);
+Connection.prototype._onData = function(data) {
+  var size = this._buffEnd + data.length;
+  if (this._data.length < size) {
+    this._grow(size);
   }
 
-  data.copy(this._data, this._dataEnd);
-  var buffer = this._data.slice(0, newSize);
+  data.copy(this._buffPri, this._buffEnd);
+  var buffer = this._buffPri.slice(0, size);
+  var offset = 0;
 
-  var startOffset = 0;
-
-  while(true){
-    if(!this._current){ // Header has not been read
-      if(buffer.length-startOffset < 9){
-        // Header is not received yet
-        break;
-      }
-
-      var id = buffer.readUInt32LE(startOffset)
-      var type = buffer.readUInt8(startOffset+4)
-      var size = buffer.readUInt32LE(startOffset+5)
-
-      this._current = {
-        id: id,
-        type: type,
-        size: size,
-        read: 0
-      }
-
-      startOffset = startOffset + 9
+  while (true) {
+    if (buffer.length < offset + 4) {
+      // not enough bytes left for res size
+      break
     }
 
-    while(this._current.size>this._current.read){
-      if(!this._current.item){ // Not in the middle of reading an item
-        // Start reading a new item
-        if(buffer.length-startOffset < 4){
-          break;
-        }
-
-        var itemSize = buffer.readUInt32LE(startOffset);
-        startOffset += 4;
-        this._current.item = {
-          size: itemSize
-        }
-      }
-
-      if(buffer.length-startOffset < this._current.item.size){ // Current item is not received yet
-        break;
-      }
-
-      var item = this._current.item;
-
-      var itemBuf = buffer.slice(startOffset, startOffset+item.size);
-      startOffset = startOffset + item.size;
-
-      this._items.push(itemBuf);
-
-      this._current.read++;
-      this._current.item = null;
+    var size = buffer.readUInt32LE(offset);
+    if (buffer.length < offset + 4 + size) {
+      // not enough bytes left for res data
+      break
     }
 
-    if(this._current.size>this._current.read){
-      // All messages are not read, need more data
-      break;
-    }
-
-    // Call registered callbacks
-    if(this._readBatchCallbacks.length){
-      // there are callbacks call the first
-      var cb = this._readBatchCallbacks.pop();
-      cb(this._current.id, this._current.type, this._items);
+    var res = buffer.slice(offset + 4, offset + 4 + size);
+    if (this._readcalls.length) {
+      var callback = this._readcalls.pop();
+      callback(null, res);
     } else {
-      this._batches.push({
-        id: this._current.id,
-        type: this._current.type,
-        data: this._items
-      });
+      this._responses.push(res);
     }
-
-    this._items = [];
-    this._current = null
   }
 
-  // set remaining data as this._data
-  buffer.copy(this._dataTmp, 0, startOffset);
-  this._dataEnd = buffer.length - startOffset;
+  // set remaining data as this._buffSec
+  // and swap primary/secondary buffers
+  buffer.copy(this._buffSec, 0, offset);
+  this._buffEnd = buffer.length - offset;
+  var tmpBuff = this._buffPri;
+  this._buffPri = this._buffSec;
+  this._buffSec = tmpBuff;
+};
 
-  // swap buffers
-  var tmpBuff = this._data;
-  this._data = this._dataTmp;
-  this._dataTmp = tmpBuff;
-}
-
-Connection.prototype._growBuffer = function(size) {
+Connection.prototype._grow = function(size) {
   var buff = new Buffer(size);
-  this._data.copy(buff);
-  this._data = buff;
+  this._buffPri.copy(buff);
+  this._buffPri = buff;
 };
 
 module.exports = {
