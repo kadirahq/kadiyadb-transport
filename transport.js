@@ -57,7 +57,7 @@ function Connection() {
   this._reset();
 }
 
-Connection.prototype.Recv = function(callback) {
+Connection.prototype.recv = function(decoder, callback) {
   if (this._responses.length) {
     var res = this._responses.pop();
     callback(null, res);
@@ -66,11 +66,12 @@ Connection.prototype.Recv = function(callback) {
   }
 };
 
-Connection.prototype.Send = function(req) {
+Connection.prototype.send = function(encoder, req) {
+  var data = encoder.encode(req).toBuffer();
   var size = new Buffer(4);
-  size.writeUInt32LE(req.length);
+  size.writeUInt32LE(data.length);
   this._socket.write(size);
-  this._socket.write(req);
+  this._socket.write(data);
 };
 
 Connection.prototype._onData = function(data) {
