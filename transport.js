@@ -54,7 +54,6 @@ function Connection() {
   this._buffPri = new Buffer(8192);
   this._buffSec = new Buffer(8192);
   this._buffEnd = 0;
-  this._reset();
 }
 
 Connection.prototype.recv = function(decoder, callback) {
