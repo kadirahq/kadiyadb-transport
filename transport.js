@@ -62,6 +62,7 @@ Connection.prototype.recv = function(decoder, callback) {
     var res = decoder.decode(data);
     callback(null, res);
   } else {
+    callback.decoder = decoder;
     this._readcalls.push(callback);
   }
 };
@@ -99,7 +100,7 @@ Connection.prototype._onData = function(data) {
     var data = buffer.slice(offset + 4, offset + 4 + size);
     if (this._readcalls.length) {
       var callback = this._readcalls.pop();
-      var res = decoder.decode(data);
+      var res = callback.decoder.decode(data);
       callback(null, res);
     } else {
       this._responses.push(res);
