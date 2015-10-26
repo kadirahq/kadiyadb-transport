@@ -97,7 +97,12 @@ Connection.prototype._onData = function(data) {
       break
     }
 
+    // slice bytes from the buffer starting from size end
     var data = buffer.slice(offset + 4, offset + 4 + size);
+
+    // increment offset
+    offset += 4 + size;
+
     if (this._readcalls.length) {
       var callback = this._readcalls.pop();
       var res = callback.decoder.decode(data);
