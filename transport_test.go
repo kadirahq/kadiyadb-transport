@@ -1,7 +1,6 @@
 package transport
 
 import (
-	"io"
 	"reflect"
 	"testing"
 	"time"
@@ -17,9 +16,7 @@ func init() {
 	l := NewListener(func(c *Conn) (err error) {
 		msg := &test.Test{}
 
-		if err = c.Recv(msg); err == io.EOF {
-			return nil
-		} else if err != nil {
+		if err := c.Recv(msg); err != nil {
 			return err
 		}
 
